@@ -1,0 +1,389 @@
+skills_ini = ini_file_ex("plugins\\skills\\skills_base.ltx")
+
+local state = {
+	spawn_location = {
+		level = nil,
+		position = {
+			x = nil,
+			y = nil,
+			z = nil,
+		},
+		angle = {
+			x = nil,
+			y = nil,
+			z = nil,
+		},
+		level_vertex_id = nil,
+		game_vertex_id = nil,
+	},
+	lostmelee = false,
+	death = false
+}
+
+function HealActor()
+    db.actor:set_health_ex(1)
+    db.actor.power = 1
+    db.actor.radiation = 0
+	db.actor.satiety = 1
+	actor_status_thirst.load_state({drink = {last_drink = 0, chk_drink = nil}})
+	actor_status_thirst.actor_on_update()
+    db.actor.bleeding = 1
+    db.actor.psy_health = 1
+    if arszi_psy then 
+        arszi_psy.set_psy_health(1.0)
+    end
+end
+
+function ApplyRankLoss()
+    local rank = db.actor:character_rank()
+    local loss_percent = 0.5
+    local rank_loss = math.abs(rank * loss_percent)
+
+    db.actor:set_character_rank(db.actor:character_rank() + (-rank_loss or 0))
+    game_statistics.check_for_rank_change()
+end
+
+function ApplyReputationLoss()
+    local rep = db.actor:character_reputation()
+    local loss_percent = 0.5
+    local rep_loss = math.abs(rep * loss_percent)
+
+    db.actor:set_character_reputation(db.actor:character_reputation() + (-rep_loss or 0))
+    game_statistics.check_for_reputation_change()
+end
+
+function ApplyMoneyLoss()
+	local money = db.actor:money()
+	local to_lose = math.floor(money * 0.05)
+	db.actor:give_money(-to_lose)
+end
+
+function ApplySkillLoss()
+	if(haru_skills) then
+		haru_skills.skills_levels = {}
+		HaruHorseshit()
+	end
+end
+
+-- why the fuck does this need to be so complicated
+function HaruHorseshit()
+	local skills_sections = skills_ini:get_sections(true)
+    for skill, _ in pairs(skills_sections) do
+        local str = str_explode(skill, "_")
+        if str[#str] == "stats" then
+            skills_sections[skill] = nil
+        end
+    end
+    for skill, _ in pairs(skills_sections) do
+        local skills_info = skills_ini:collect_section(skill)
+        for k, v in pairs(skills_info) do
+            skills_info[k] = tonumber(skills_info[k])
+        end
+        if haru_skills.skills_levels[skill] then
+            haru_skills.skills_levels[skill].max_level = skills_info.max_level
+            haru_skills.skills_levels[skill].base_requirement = skills_info.base_requirement
+        else
+            haru_skills.skills_levels[skill] = skills_info
+            haru_skills.skills_levels[skill].current_level = 0
+            haru_skills.skills_levels[skill].prev_requirement = 0
+            haru_skills.skills_levels[skill].experience = 0
+            haru_skills.skills_levels[skill].requirement = haru_skills.skills_levels[skill].base_requirement
+        end
+    end
+
+    for skill, _ in pairs(skills_sections) do
+        local skills_info = skills_ini:collect_section(skill .. "_stats")
+        for k, v in pairs(skills_info) do
+            if k ~= "functor" then
+                skills_info[k] = tonumber(skills_info[k])
+            end
+        end
+        haru_skills.skills_increments[skill] = {}
+        for k, v in pairs(skills_info) do
+            local str = str_explode(k, "_")
+            if str[#str] == "increment" then
+                skills_info[k] = nil
+                haru_skills.skills_increments[skill][string.gsub(k, "_increment", "")] = v
+            end
+        end
+        
+        haru_skills.skills_stats[skill] = {}
+        for stat, val in pairs(skills_info) do
+            if stat ~= "functor" then
+                haru_skills.skills_stats[skill][stat] = val + (haru_skills.skills_increments[skill][stat] * haru_skills.skills_levels[skill].current_level) 
+            else
+                haru_skills.skills_stats[skill][stat] = val
+            end
+        end
+    end
+end
+
+function DeleteItems()
+	log("Ein Hardcore Deaths deleting items..")
+	local function release_actor_item(_, item)
+		if(item:section() == "bolt") then
+			return
+		end
+		if(item:section() == "wpn_knife" or
+			item:section() == "wpn_knife2" or
+			item:section() == "wpn_knife3" or
+			item:section() == "wpn_knife4" or
+			item:section() == "wpn_knife5" or
+			item:section() == "wpn_knife6" or
+			item:section() == "wpn_knife7" or
+			item:section() == "wpn_knife8" or
+			item:section() == "wpn_knife9" or
+			item:section() == "wpn_axe" or
+			item:section() == "wpn_axe2" or
+			item:section() == "wpn_axe3") then
+			state.lostmelee = true
+		end
+		log("deleting: "..item:section())
+		alife_release(item)
+    end
+    db.actor:iterate_inventory(release_actor_item)
+	if(state.lostmelee) then
+		log("lostmelee true")
+	end
+end
+
+function StopSurgeAndStorm()
+    surge_manager.stop_surge()    
+    
+    local psi_storm_manager = psi_storm_manager.get_psi_storm_manager()
+
+    if (psi_storm_manager.started) then
+        psi_storm_manager:finish(true)
+    end
+end
+
+function ReloadGame() 
+	log("Ein Hardcore Deaths reloading game..")
+
+	-- respawn either next or this morning, not late or at night
+	local hour = level.get_time_hours()
+	if(hour > 7) then
+		local nextmorning = 24+7-hour
+		level.change_game_time(0, nextmorning, 0)
+	else
+		local thismorning = 7-hour
+		level.change_game_time(0, thismorning, 0)
+	end
+    
+    local position = vector():set(state.spawn_location.position.x, state.spawn_location.position.y, state.spawn_location.position.z)   
+    local level_vertex_id = state.spawn_location.level_vertex_id
+    local game_vertex_id = state.spawn_location.game_vertex_id  
+    
+    level.add_pp_effector("black_infinite.ppe", 5606, true)
+	log("Position: "..state.spawn_location.position.x.." "..state.spawn_location.position.y.." "..state.spawn_location.position.z)
+	log("level_vertex_id: "..state.spawn_location.level_vertex_id)
+	log("game_vertex_id: "..state.spawn_location.game_vertex_id)
+	
+	local function respawn(position, level_vertex_id, game_vertex_id)
+        ChangeLevel(position, level_vertex_id, game_vertex_id, VEC_ZERO, false)
+        return true
+    end
+	
+	if dte then
+        dte.CreateTimeEvent(0, "respawn", 1, respawn, position, level_vertex_id, game_vertex_id)
+    else
+        CreateTimeEvent(0, "respawn", 1, respawn, position, level_vertex_id, game_vertex_id)
+    end
+	
+	StopSurgeAndStorm()
+end
+
+function force_save()
+	log("Ein Hardcore Deaths saving game..")
+	--if game isn't already paused, then force a pause here
+	local force_pause
+	if not (device():is_paused()) then 
+		device():pause(true)
+		force_pause = true
+	end
+	local Y, M, D, h
+    Y, M, D, h = game.get_game_time():get(Y, M, D, h)
+    
+    local m = level.get_time_minutes()
+    if m < 10 then
+        m = ("0"..m)
+    end
+    
+    local comm = utils_xml.get_special_txt(db.actor:character_community())
+    local map = utils_xml.get_special_txt(level.name())
+    local date = string.format("%d.%d.%d %d-%d", D, M, Y, h, m)
+    local file_name = "hardcore_"..comm.." - "..map.." "..date
+
+	exec_console_cmd("save ".. file_name)
+    
+	if (force_pause) then 
+		device():pause(false)
+	end
+end
+
+function set_spawn()
+	if(level.name() ~= "fake_start") then
+		log("Ein Hardcore Deaths setting spawn..")
+		local se_actor = alife():actor()
+		
+		state.spawn_location.level = level.name()
+		state.spawn_location.position.x = se_actor.position.x
+		state.spawn_location.position.y = se_actor.position.y
+		state.spawn_location.position.z = se_actor.position.z
+		state.spawn_location.angle.x = se_actor.angle.x
+		state.spawn_location.angle.y = se_actor.angle.y
+		state.spawn_location.angle.z = se_actor.angle.z
+		state.spawn_location.level_vertex_id = se_actor.m_level_vertex_id
+		state.spawn_location.game_vertex_id = se_actor.m_game_vertex_id
+		
+		log("level: "..level.name())
+		log("Position: "..se_actor.position.x.." "..se_actor.position.y.." "..se_actor.position.z)
+		if(se_actor.m_level_vertex_id ~= nil) then
+			log("level_vertex_id: "..se_actor.m_level_vertex_id)
+		end
+		if(se_actor.game_vertex_id ~= nil) then
+			log("game_vertex_id: "..se_actor.game_vertex_id)
+		end
+		actor_menu.set_msg(1, "Spawn Set", 4)
+		force_save()
+	else
+		log("Ein Hardcore Deaths fake_start spawn..")
+	end
+end
+
+function OnDeath()
+	log("Ein Hardcore Deaths OnDeath()")
+	bind_stalker_ext.invulnerable_time = time_global() + 30000
+    actor_status.deactivate_hud()
+	state.death = true
+	
+    HealActor()
+    ApplyRankLoss()
+    ApplyReputationLoss()
+	ApplyMoneyLoss()
+	ApplySkillLoss()
+	DeleteItems()
+	ReloadGame()
+	-- ChangeLevel in reload causes scripts to reload, execution continues from on_game_load()
+end
+
+-- HOOK FUNCTIONS
+local function on_console_execute(name, ...)
+    if(name == "save") then
+        log("Ein Hardcore save console execute..")
+        local extraArgs = {...}
+
+        if extraArgs then
+            local last_save_file_name = table.concat(extraArgs," ")
+            log(last_save_file_name)
+			last_save_file_name = string.lower(last_save_file_name)
+		
+			log("Don't delete: ".. last_save_file_name)
+		
+			local fs = getFS()
+			if not fs then return end
+			
+			local flist = fs:file_list_open_ex("$game_saves$",bit_or(FS.FS_ListFiles,FS.FS_RootOnly),"*.scoc")
+			log("flist size(): "..flist:Size())
+			for	it=0, flist:Size()-1 do
+				local file = flist:GetAt(it)
+				local file_name = string.sub(file:NameFull(), 0, (string.len(file:NameFull()) - string.len(".scoc")))
+				
+				local scoc_path = fs:update_path('$game_saves$', '')..file_name..".scoc"
+				local scop_path = fs:update_path('$game_saves$', '')..file_name..".scop"
+				local dds_path = fs:update_path('$game_saves$', '')..file_name..".dds"
+		
+				local f = io.open(scoc_path,"rb")
+				if f then
+					local data = f:read("*all")
+					f:close()
+					if (data) then
+						log("Ein Hardcore file: "..file_name)
+						file_name = string.lower(file_name)
+						if file_name ~= last_save_file_name then
+							log("Ein Hardcore delete save file: "..file_name)
+	
+							local scoc_path_bak = fs:update_path('$game_saves$', '').."hardcore-backup/"..file_name..".scoc"
+							local scop_path_bak = fs:update_path('$game_saves$', '').."hardcore-backup/"..file_name..".scop"
+							local dds_path_bak = fs:update_path('$game_saves$', '').."hardcore-backup/"..file_name..".dds"
+	
+							fs:file_copy(scoc_path, scoc_path_bak)
+							fs:file_copy(scop_path, scop_path_bak)
+							fs:file_copy(dds_path, dds_path_bak)
+	
+							ui_load_dialog.delete_save_game(file_name)			
+						end
+					end
+				end
+			end
+        end
+    end
+end
+
+local function actor_on_before_death(who, flags)    
+	log("Ein Hardcore Deaths actor_on_before_death") 
+	if has_alife_info("bar_arena_fight") or has_alife_info("bar_arena_start") then
+		log("Arena Death")
+		return
+	end
+	game_statistics.increment_statistic("deaths")
+	flags.ret_value = false
+	OnDeath()
+end
+
+local function actor_on_first_update() 
+	log("Ein Hardcore Deaths actor_on_first_update()")
+    if not state.spawn_location.level then
+		set_spawn()
+    end
+end
+
+local function on_game_load()
+	log("Ein Hardcore Deaths on_game_load()")
+    if(state) then
+		if(state.death == true) then
+			log("death true")
+			HealActor()
+			if(state.lostmelee) then
+				log("lostmelee true")
+				alife_create_item('wpn_knife2', db.actor)
+				state.lostmelee = false
+			else
+				log("lostmelee false")
+			end
+			local function draw_hud()
+				level.enable_input()
+				get_console():execute("hud_draw on")
+				bind_stalker_ext.invulnerable_time = time_global() + 1
+				return true
+			end
+			state.death = false
+			CreateTimeEvent("respawn_mode_draw_hud", "draw_hud", 2, draw_hud)
+			force_save()
+		else
+			log("death false")
+		end
+	else
+		log("Ein Hardcore no state")
+    end
+end
+
+local function save_state(mdata)
+    alife_storage_manager.get_state().einshardcore = state
+end
+
+local function load_state(mdata)
+    state = alife_storage_manager.get_state().einshardcore or state
+end
+
+
+-- HOOKS
+function on_game_start()
+	log("Ein Hardcore Deaths on_game_start()")
+	RegisterScriptCallback("actor_on_before_death", actor_on_before_death)
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("on_game_load", on_game_load)
+	RegisterScriptCallback("save_state", save_state)
+    RegisterScriptCallback("load_state", load_state)
+	RegisterScriptCallback("on_console_execute", on_console_execute)
+end
