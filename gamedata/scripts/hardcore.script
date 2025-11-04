@@ -282,7 +282,7 @@ local function is_npc_pda_charged(obj, actor_equ, inventory)
 	end
 end
 local function pda_ui_option(obj, actor_equ, inventory)
-	return "Reformat"
+	return "reformat [!]"
 end
 
 local function pda_someshit(obj, actor_equ, inventory)
