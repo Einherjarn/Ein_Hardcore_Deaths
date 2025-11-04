@@ -118,10 +118,17 @@ function HaruHorseshit()
     end
 end
 
+local function isQuestKind(item)
+    return (ini_sys:r_string_ex(item:section(), "kind") == "i_quest")
+end
+
 function DeleteItems()
 	log("Ein Hardcore Deaths deleting items..")
 	local function release_actor_item(_, item)
 		if(item:section() == "bolt") then
+			return
+		end
+		if(isQuestKind(item)) then
 			return
 		end
 		if(item:section() == "wpn_knife" or
@@ -267,6 +274,27 @@ function OnDeath()
 	-- ChangeLevel in reload causes scripts to reload, execution continues from on_game_load()
 end
 
+-- TAKE OVER PDA
+local function is_npc_pda_charged(obj, actor_equ, inventory)
+	local valid = string.find(obj:section(), "itm_pda_")
+	if valid and obj:condition() and obj:condition() > 0.01 then
+		return true
+	end
+end
+local function pda_ui_option(obj, actor_equ, inventory)
+	return "Reformat"
+end
+
+local function pda_someshit(obj, actor_equ, inventory)
+	return true
+end
+
+local function takeover_pda(obj, actor_equ, inventory)
+	local con = obj:condition()
+	alife_release(obj)
+	alife_create_item('device_pda_1', db.actor, {cond = con})
+end
+
 -- HOOK FUNCTIONS
 local function on_console_execute(name, ...)
     if(name == "save") then
@@ -386,4 +414,6 @@ function on_game_start()
 	RegisterScriptCallback("save_state", save_state)
     RegisterScriptCallback("load_state", load_state)
 	RegisterScriptCallback("on_console_execute", on_console_execute)
+	--function add_functor(name, cond_name, func_name, cond_action, func_action, override_bags)
+	custom_functor_autoinject.add_functor("pda_take_over", is_npc_pda_charged, pda_ui_option, pda_someshit, takeover_pda, true)
 end
