@@ -374,7 +374,7 @@ local function on_game_load()
 			HealActor()
 			if(state.lostmelee) then
 				log("lostmelee true")
-				alife_create_item('wpn_knife2', db.actor)
+				alife_create_item('wpn_knife', db.actor)
 				state.lostmelee = false
 			else
 				log("lostmelee false")
